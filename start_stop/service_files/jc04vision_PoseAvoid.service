@@ -1,0 +1,17 @@
+[Unit]
+Description=JC04 Pose Avoid Vision Node
+Wants=camera.service
+After=camera.service
+
+[Service]
+Type=simple
+User=nvidia
+WorkingDirectory=/home/nvidia/JC04_Vision/Face/yolov8-face
+ExecStart=/home/nvidia/JC04_Vision/start_stop/jc04vision_PoseAvoid.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

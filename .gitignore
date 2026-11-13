@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+Hand/env-mediapipe/
+.venv/
+venv/
+test/results/
+test/logs/
+test/reports/
+.env
+.env.*
+*.pem
+*.key

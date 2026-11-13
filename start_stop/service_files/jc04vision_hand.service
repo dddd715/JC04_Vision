@@ -1,0 +1,15 @@
+[Unit]
+Description=JC04 MediaPipe Hand Gesture Recognition
+Wants=network-online.target camera.service
+After=network-online.target camera.service joy_teleop.service
+
+[Service]
+Type=simple
+User=nvidia
+WorkingDirectory=/home/nvidia/JC04_Vision/Hand
+ExecStart=/home/nvidia/JC04_Vision/start_stop/jc04vision_hand.sh
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
