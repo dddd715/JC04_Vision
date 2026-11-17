@@ -1,5 +1,7 @@
 import os
 import threading
+import time
+from collections import defaultdict, deque
 
 import cv2
 import mediapipe as mp
@@ -83,6 +85,22 @@ class GestureProcessor:
                 return True
         return False
 
+    def get_hand_positions(self) -> list[tuple[str, float]]:
+        """Return MediaPipe handedness and normalized wrist x positions."""
+        if not self.latest_result:
+            return []
+
+        positions = []
+        handedness = self.latest_result.handedness or []
+        landmarks = self.latest_result.hand_landmarks or []
+        for index, hand in enumerate(landmarks):
+            if index >= len(handedness) or not hand:
+                continue
+            label = handedness[index][0].category_name.lower()
+            if label in ("left", "right"):
+                positions.append((label, float(hand[0].x)))
+        return positions
+
     def close(self):
         if self.gesture_recognizer:
             self.gesture_recognizer.close()
@@ -92,8 +110,14 @@ class HandGesturePublisher(Node):
 
     def __init__(self):
         super().__init__("hand_gesture_publisher")
-        self.msg = "left"
         self.gesture_topic = "jc04_wave_sign"
+        self.wave_history = defaultdict(lambda: deque(maxlen=36))
+        self.last_wave_time = {"left": 0.0, "right": 0.0}
+        self.wave_window_seconds = 1.0
+        self.wave_min_span = 0.10
+        self.wave_min_reversals = 1
+        self.wave_direction_step = 0.035
+        self.wave_cooldown_seconds = 1.5
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("enable_topic", "/hand_wave_enabled")
         self.image_topic = self.get_parameter("image_topic").get_parameter_value().string_value
@@ -133,6 +157,7 @@ class HandGesturePublisher(Node):
 
         self.hand_wave_enabled = enabled
         if enabled:
+            self.wave_history.clear()
             self.start_image_subscription()
             self.get_logger().info("Hand wave enabled, camera subscription started")
         else:
@@ -156,6 +181,7 @@ class HandGesturePublisher(Node):
 
         self.destroy_subscription(self.sub_image)
         self.sub_image = None
+        self.wave_history.clear()
 
     def image_callback(self, msg: Image):
         if not self.hand_wave_enabled:
@@ -166,19 +192,51 @@ class HandGesturePublisher(Node):
                 frame_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
                 self.processor.process_frame(frame_bgr)
                 names = self.processor.get_gesture_names()
-                gesture_detected = self.processor.has_gesture()
+                hand_positions = self.processor.get_hand_positions()
         except Exception as exc:
             self.get_logger().error(f"Gesture processing failed: {exc}")
             return
 
-        if gesture_detected:
+        now = time.monotonic()
+        active_hands = set()
+        for hand, wrist_x in hand_positions:
+            active_hands.add(hand)
+            history = self.wave_history[hand]
+            history.append((now, wrist_x))
+            while history and now - history[0][0] > self.wave_window_seconds:
+                history.popleft()
+
+            if len(history) < 6:
+                continue
+            xs = [point[1] for point in history]
+            if max(xs) - min(xs) < self.wave_min_span:
+                continue
+
+            directions = []
+            anchor = xs[0]
+            for current in xs[1:]:
+                delta = current - anchor
+                if abs(delta) >= self.wave_direction_step:
+                    direction = 1 if delta > 0 else -1
+                    if not directions or direction != directions[-1]:
+                        directions.append(direction)
+                    anchor = current
+            reversals = max(0, len(directions) - 1)
+            if reversals < self.wave_min_reversals:
+                continue
+            if now - self.last_wave_time[hand] < self.wave_cooldown_seconds:
+                continue
+
+            self.last_wave_time[hand] = now
             gesture_msg = String()
-            gesture_msg.data = self.msg
+            gesture_msg.data = hand
             self.pub_gesture.publish(gesture_msg)
             self.get_logger().info(
-                f"Gesture {names} detected -> publish {self.msg}",
-                throttle_duration_sec=1.0,
+                f"Waving {hand} hand detected (gestures={names}) -> wave robot {hand} arm"
             )
+
+        for hand in set(self.wave_history) - active_hands:
+            self.wave_history[hand].clear()
 
     def destroy_node(self):
         self.processor.close()
